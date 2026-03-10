@@ -642,32 +642,6 @@ pub unsafe fn allocate_lora_security_array(
     Box::into_raw(boxed) as *mut crate::ffi::types::LoRASecurityResult
 }
 
-/// Allocate C array of BertTokenEntity
-///
-/// # Safety
-/// - Returns a pointer that must be freed appropriately
-pub unsafe fn allocate_bert_token_entity_array(
-    token_results: &[(String, String, f32)],
-) -> *mut crate::ffi::types::BertTokenEntity {
-    if token_results.is_empty() {
-        return std::ptr::null_mut();
-    }
-
-    let mut entities = Vec::with_capacity(token_results.len());
-    for (i, (token, label, confidence)) in token_results.iter().enumerate() {
-        entities.push(crate::ffi::types::BertTokenEntity {
-            entity_type: allocate_c_string(label),
-            start: i as i32 * token.len() as i32, // Simplified position calculation
-            end: (i + 1) as i32 * token.len() as i32,
-            text: allocate_c_string(token),
-            confidence: *confidence,
-        });
-    }
-
-    let boxed = entities.into_boxed_slice();
-    Box::into_raw(boxed) as *mut crate::ffi::types::BertTokenEntity
-}
-
 /// Allocate C array of ModernBertTokenEntity
 ///
 /// # Safety

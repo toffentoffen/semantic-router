@@ -1217,15 +1217,24 @@ pub extern "C" fn init_bert_token_classifier(
         candle_core::Device::cuda_if_available(0).unwrap_or(candle_core::Device::Cpu)
     };
 
+    // Return early if already initialized (idempotent)
+    if crate::model_architectures::traditional::bert::TRADITIONAL_BERT_TOKEN_CLASSIFIER
+        .get()
+        .is_some()
+    {
+        return true;
+    }
+
     // Initialize TraditionalBertTokenClassifier
     match crate::model_architectures::traditional::bert::TraditionalBertTokenClassifier::new(
         model_path,
         num_classes as usize,
         use_cpu,
     ) {
-        Ok(_classifier) => {
-            // Store in global static (would need to add this to the lazy_static block)
-            true
+        Ok(classifier) => {
+            crate::model_architectures::traditional::bert::TRADITIONAL_BERT_TOKEN_CLASSIFIER
+                .set(std::sync::Arc::new(classifier))
+                .is_ok()
         }
         Err(e) => {
             eprintln!("Failed to initialize BERT token classifier: {}", e);

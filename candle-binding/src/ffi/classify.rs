@@ -5,9 +5,8 @@
 
 use crate::core::UnifiedError;
 use crate::ffi::memory::{
-    allocate_bert_token_entity_array, allocate_c_float_array, allocate_c_string,
-    allocate_lora_intent_array, allocate_lora_pii_array, allocate_lora_security_array,
-    allocate_modernbert_token_entity_array,
+    allocate_c_float_array, allocate_c_string, allocate_lora_intent_array, allocate_lora_pii_array,
+    allocate_lora_security_array, allocate_modernbert_token_entity_array,
 };
 use crate::ffi::types::BertTokenEntity;
 use crate::ffi::types::*;
@@ -492,19 +491,20 @@ pub extern "C" fn classify_bert_pii_tokens(text: *const c_char) -> BertTokenClas
         let classifier = classifier.clone();
         match classifier.classify_tokens(text) {
             Ok(token_results) => {
-                // Convert results to BertTokenEntity format
-                let token_entities: Vec<(String, String, f32)> = token_results
+                // Convert results to BertTokenEntity format with real positions, filtering class 0
+                let token_entities: Vec<(String, String, f32, usize, usize)> = token_results
                     .iter()
-                    .map(|(token, label, score)| {
-                        (token.clone(), format!("label_{}", label), *score)
+                    .filter(|(_, label, _, _, _)| *label != 0)
+                    .map(|(token, label, score, start, end)| {
+                        (token.clone(), format!("label_{}", label), *score, *start, *end)
                     })
                     .collect();
 
-                let entities_ptr = unsafe { allocate_bert_token_entity_array(&token_entities) };
+                let entities_ptr = unsafe { allocate_modernbert_token_entity_array(&token_entities) };
 
                 BertTokenClassificationResult {
-                    entities: entities_ptr,
-                    num_entities: token_results.len() as i32,
+                    entities: entities_ptr as *mut BertTokenEntity,
+                    num_entities: token_entities.len() as i32,
                 }
             }
             Err(_e) => BertTokenClassificationResult {
@@ -563,7 +563,7 @@ pub extern "C" fn classify_candle_bert_tokens_with_labels(
         match classifier.classify_tokens(text) {
             Ok(token_results) => {
                 // Filter out "O" (Outside) labels - only return actual entities
-                let token_entities: Vec<(String, String, f32)> = token_results
+                let token_entities: Vec<(String, String, f32, usize, usize)> = token_results
                     .iter()
                     .filter(|result| result.label_name != "O" && result.label_id != 0)
                     .map(|result| {
@@ -571,14 +571,16 @@ pub extern "C" fn classify_candle_bert_tokens_with_labels(
                             result.token.clone(),
                             result.label_name.clone(),
                             result.confidence,
+                            result.start_pos,
+                            result.end_pos,
                         )
                     })
                     .collect();
 
-                let entities_ptr = unsafe { allocate_bert_token_entity_array(&token_entities) };
+                let entities_ptr = unsafe { allocate_modernbert_token_entity_array(&token_entities) };
 
                 return BertTokenClassificationResult {
-                    entities: entities_ptr,
+                    entities: entities_ptr as *mut BertTokenEntity,
                     num_entities: token_entities.len() as i32,
                 };
             }
@@ -593,19 +595,20 @@ pub extern "C" fn classify_candle_bert_tokens_with_labels(
         let classifier = classifier.clone();
         match classifier.classify_tokens(text) {
             Ok(token_results) => {
-                // Convert results to BertTokenEntity format
-                let token_entities: Vec<(String, String, f32)> = token_results
+                // Convert results to BertTokenEntity format with real positions, filtering class 0
+                let token_entities: Vec<(String, String, f32, usize, usize)> = token_results
                     .iter()
-                    .map(|(token, label, score)| {
-                        (token.clone(), format!("label_{}", label), *score)
+                    .filter(|(_, label, _, _, _)| *label != 0)
+                    .map(|(token, label, score, start, end)| {
+                        (token.clone(), format!("label_{}", label), *score, *start, *end)
                     })
                     .collect();
 
-                let entities_ptr = unsafe { allocate_bert_token_entity_array(&token_entities) };
+                let entities_ptr = unsafe { allocate_modernbert_token_entity_array(&token_entities) };
 
                 BertTokenClassificationResult {
-                    entities: entities_ptr,
-                    num_entities: token_results.len() as i32,
+                    entities: entities_ptr as *mut BertTokenEntity,
+                    num_entities: token_entities.len() as i32,
                 }
             }
             Err(_e) => BertTokenClassificationResult {
@@ -649,17 +652,17 @@ pub extern "C" fn classify_candle_bert_tokens(
         match lora_classifier.classify_tokens(text) {
             Ok(lora_results) => {
                 // Filter out "O" (Outside) labels - only return actual entities
-                // Convert LoRA results to BertTokenEntity format
-                let token_entities: Vec<(String, String, f32)> = lora_results
+                // Convert LoRA results with real positions
+                let token_entities: Vec<(String, String, f32, usize, usize)> = lora_results
                     .iter()
                     .filter(|r| r.label_name != "O" && r.label_id != 0)
-                    .map(|r| (r.token.clone(), r.label_name.clone(), r.confidence))
+                    .map(|r| (r.token.clone(), r.label_name.clone(), r.confidence, r.start_pos, r.end_pos))
                     .collect();
 
-                let entities_ptr = unsafe { allocate_bert_token_entity_array(&token_entities) };
+                let entities_ptr = unsafe { allocate_modernbert_token_entity_array(&token_entities) };
 
                 return BertTokenClassificationResult {
-                    entities: entities_ptr,
+                    entities: entities_ptr as *mut BertTokenEntity,
                     num_entities: token_entities.len() as i32,
                 };
             }
@@ -677,18 +680,18 @@ pub extern "C" fn classify_candle_bert_tokens(
         let classifier = classifier.clone();
         match classifier.classify_tokens(text) {
             Ok(token_results) => {
-                // Convert results to C-compatible format
-                let token_entities: Vec<(String, String, f32)> = token_results
+                // Convert results to C-compatible format with real positions
+                let token_entities: Vec<(String, String, f32, usize, usize)> = token_results
                     .iter()
-                    .map(|(token, class_idx, confidence)| {
-                        (token.clone(), format!("class_{}", class_idx), *confidence)
+                    .map(|(token, class_idx, confidence, start, end)| {
+                        (token.clone(), format!("class_{}", class_idx), *confidence, *start, *end)
                     })
                     .collect();
 
-                let entities_ptr = unsafe { allocate_bert_token_entity_array(&token_entities) };
+                let entities_ptr = unsafe { allocate_modernbert_token_entity_array(&token_entities) };
 
                 return BertTokenClassificationResult {
-                    entities: entities_ptr,
+                    entities: entities_ptr as *mut BertTokenEntity,
                     num_entities: token_entities.len() as i32,
                 };
             }

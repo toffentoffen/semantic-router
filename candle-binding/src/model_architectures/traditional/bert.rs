@@ -539,11 +539,12 @@ impl TraditionalBertTokenClassifier {
     }
 
     /// Classify tokens in text
-    pub fn classify_tokens(&self, text: &str) -> Result<Vec<(String, usize, f32)>> {
+    pub fn classify_tokens(&self, text: &str) -> Result<Vec<(String, usize, f32, usize, usize)>> {
         // Tokenize input text
         let tokenization_result = self.tokenizer.tokenize(text)?;
         let token_ids = tokenization_result.token_ids;
         let token_strings = tokenization_result.tokens;
+        let offsets = tokenization_result.offsets;
 
         // Create input tensors
         // Convert i32 to u32 for tensor creation
@@ -564,10 +565,24 @@ impl TraditionalBertTokenClassifier {
 
         // Extract predictions for each token
         let probs_data = probabilities.to_vec3::<f32>()?;
-        let mut results = Vec::new();
 
-        for (i, token) in token_strings.iter().enumerate() {
-            if i < probs_data[0].len() {
+        // Collect per-token predictions with real offsets
+        struct TokenPred {
+            predicted_class: usize,
+            confidence: f32,
+            start: usize,
+            end: usize,
+        }
+        let mut token_preds = Vec::new();
+
+        let pii_threshold = {
+            use crate::core::config_loader::GlobalConfigLoader;
+            GlobalConfigLoader::load_router_config_safe()
+                .traditional_pii_detection_threshold
+        };
+
+        for (i, _token) in token_strings.iter().enumerate() {
+            if i < probs_data[0].len() && i < offsets.len() {
                 let token_probs = &probs_data[0][i];
                 let (predicted_class, confidence) = token_probs
                     .iter()
@@ -576,16 +591,50 @@ impl TraditionalBertTokenClassifier {
                     .map(|(idx, &conf)| (idx, conf))
                     .unwrap_or((0, 0.0));
 
-                // Only include tokens with reasonable confidence (configurable threshold)
-                let pii_threshold = {
-                    use crate::core::config_loader::GlobalConfigLoader;
-                    GlobalConfigLoader::load_router_config_safe()
-                        .traditional_pii_detection_threshold
-                };
+                let (start, end) = offsets[i];
+
+                // Skip special tokens with zero-length offsets
+                if start == 0 && end == 0 {
+                    continue;
+                }
+
                 if confidence > pii_threshold {
-                    results.push((token.clone(), predicted_class, confidence));
+                    token_preds.push(TokenPred {
+                        predicted_class,
+                        confidence,
+                        start,
+                        end,
+                    });
                 }
             }
+        }
+
+        // Merge consecutive tokens with the same predicted class (adjacent-class merging)
+        let mut results = Vec::new();
+        let mut i = 0;
+        while i < token_preds.len() {
+            let pred = &token_preds[i];
+            let class = pred.predicted_class;
+            let mut end = pred.end;
+            let start = pred.start;
+            let mut confidence_sum = pred.confidence;
+            let mut count = 1;
+
+            // Merge consecutive tokens with same class
+            while i + 1 < token_preds.len() && token_preds[i + 1].predicted_class == class {
+                i += 1;
+                end = token_preds[i].end;
+                confidence_sum += token_preds[i].confidence;
+                count += 1;
+            }
+
+            let entity_text = if start < text.len() && end <= text.len() {
+                text[start..end].to_string()
+            } else {
+                String::new()
+            };
+            results.push((entity_text, class, confidence_sum / count as f32, start, end));
+            i += 1;
         }
 
         Ok(results)

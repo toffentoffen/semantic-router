@@ -182,10 +182,28 @@ impl LoRATokenClassifier {
 
         // Use real tokenization and classification based on model configuration
         let tokens = self.tokenize_with_bert_compatible(text)?;
-        let mut results = Vec::new();
 
-        for (i, (token, token_embedding)) in tokens.iter().enumerate() {
-            // Use real BERT embedding from tokenization
+        // Check if labels use BIO format
+        let is_bio_format = self
+            .id2label
+            .values()
+            .any(|v| v.starts_with("B-") || v.starts_with("I-"));
+
+        // Collect per-token predictions with real offsets
+        struct TokenPrediction {
+            label_name: String,
+            label_id: usize,
+            confidence: f32,
+            start: usize,
+            end: usize,
+        }
+        let mut predictions = Vec::new();
+
+        for (_i, (token, token_embedding, start, end)) in tokens.iter().enumerate() {
+            // Skip special tokens (zero-length offsets)
+            if *start == 0 && *end == 0 {
+                continue;
+            }
 
             // Add batch dimension: [hidden_size] -> [1, hidden_size]
             let token_embedding_batched = token_embedding.unsqueeze(0)?;
@@ -195,7 +213,7 @@ impl LoRATokenClassifier {
 
             // Apply LoRA adapters if available
             let enhanced_logits = if let Some(adapter) = self.adapters.get("token_classification") {
-                let adapter_output = adapter.forward(&token_embedding_batched, false)?; // false = not training
+                let adapter_output = adapter.forward(&token_embedding_batched, false)?;
                 (&base_logits + &adapter_output)?
             } else {
                 base_logits
@@ -213,7 +231,6 @@ impl LoRATokenClassifier {
                 .map(|(idx, &conf)| (idx, conf))
                 .unwrap_or((0, 0.0));
 
-            // Only include predictions above confidence threshold
             if confidence > self.confidence_threshold {
                 let label_name = self
                     .id2label
@@ -221,14 +238,155 @@ impl LoRATokenClassifier {
                     .cloned()
                     .unwrap_or_else(|| format!("LABEL_{}", predicted_id));
 
-                results.push(LoRATokenResult {
-                    token: token.clone(),
-                    label_id: predicted_id,
+                predictions.push(TokenPrediction {
                     label_name,
+                    label_id: predicted_id,
                     confidence,
-                    start_pos: i * token.len(), // Simplified position calculation
-                    end_pos: (i + 1) * token.len(),
+                    start: *start,
+                    end: *end,
                 });
+            }
+        }
+
+        // Entity merging
+        let mut results = Vec::new();
+
+        if is_bio_format {
+            // BIO entity merging (same pattern as ModernBERT)
+            struct CurrentEntity {
+                entity_type: String,
+                label_id: usize,
+                start: usize,
+                end: usize,
+                confidence: f32,
+            }
+            let mut current_entity: Option<CurrentEntity> = None;
+
+            for pred in &predictions {
+                if pred.label_name.starts_with("B-") {
+                    // Push previous entity
+                    if let Some(entity) = current_entity.take() {
+                        let entity_text = if entity.start < text.len() && entity.end <= text.len() {
+                            text[entity.start..entity.end].to_string()
+                        } else {
+                            String::new()
+                        };
+                        results.push(LoRATokenResult {
+                            token: entity_text,
+                            label_id: entity.label_id,
+                            label_name: entity.entity_type.clone(),
+                            confidence: entity.confidence,
+                            start_pos: entity.start,
+                            end_pos: entity.end,
+                        });
+                    }
+                    let entity_type = pred.label_name[2..].to_string();
+                    current_entity = Some(CurrentEntity {
+                        entity_type,
+                        label_id: pred.label_id,
+                        start: pred.start,
+                        end: pred.end,
+                        confidence: pred.confidence,
+                    });
+                } else if let Some(entity_type) = pred.label_name.strip_prefix("I-") {
+                    if let Some(ref mut entity) = current_entity {
+                        if entity.entity_type == entity_type {
+                            entity.end = pred.end;
+                            entity.confidence = (entity.confidence + pred.confidence) / 2.0;
+                        } else {
+                            // Different type, push current
+                            let entity_text = if entity.start < text.len() && entity.end <= text.len() {
+                                text[entity.start..entity.end].to_string()
+                            } else {
+                                String::new()
+                            };
+                            results.push(LoRATokenResult {
+                                token: entity_text,
+                                label_id: entity.label_id,
+                                label_name: entity.entity_type.clone(),
+                                confidence: entity.confidence,
+                                start_pos: entity.start,
+                                end_pos: entity.end,
+                            });
+                            current_entity = None;
+                        }
+                    }
+                } else {
+                    // O tag or other
+                    if let Some(entity) = current_entity.take() {
+                        let entity_text = if entity.start < text.len() && entity.end <= text.len() {
+                            text[entity.start..entity.end].to_string()
+                        } else {
+                            String::new()
+                        };
+                        results.push(LoRATokenResult {
+                            token: entity_text,
+                            label_id: entity.label_id,
+                            label_name: entity.entity_type.clone(),
+                            confidence: entity.confidence,
+                            start_pos: entity.start,
+                            end_pos: entity.end,
+                        });
+                    }
+                }
+            }
+            // Push final entity
+            if let Some(entity) = current_entity.take() {
+                let entity_text = if entity.start < text.len() && entity.end <= text.len() {
+                    text[entity.start..entity.end].to_string()
+                } else {
+                    String::new()
+                };
+                results.push(LoRATokenResult {
+                    token: entity_text,
+                    label_id: entity.label_id,
+                    label_name: entity.entity_type.clone(),
+                    confidence: entity.confidence,
+                    start_pos: entity.start,
+                    end_pos: entity.end,
+                });
+            }
+        } else {
+            // Simple adjacent-class merging for non-BIO models
+            let mut i = 0;
+            while i < predictions.len() {
+                let pred = &predictions[i];
+                if pred.label_name == "O" || pred.label_id == 0 {
+                    i += 1;
+                    continue;
+                }
+                // Start a new merged entity
+                let mut end = pred.end;
+                let mut confidence = pred.confidence;
+                let mut count = 1;
+                let label_id = pred.label_id;
+                let label_name = pred.label_name.clone();
+                let start = pred.start;
+
+                // Merge consecutive tokens with same class
+                while i + 1 < predictions.len()
+                    && predictions[i + 1].label_id == label_id
+                {
+                    i += 1;
+                    end = predictions[i].end;
+                    confidence += predictions[i].confidence;
+                    count += 1;
+                }
+
+                let entity_text = if start < text.len() && end <= text.len() {
+                    text[start..end].to_string()
+                } else {
+                    String::new()
+                };
+                results.push(LoRATokenResult {
+                    token: entity_text,
+                    label_id,
+                    label_name,
+                    confidence: confidence / count as f32,
+                    start_pos: start,
+                    end_pos: end,
+                });
+                i += 1;
             }
         }
 
@@ -242,8 +400,8 @@ impl LoRATokenClassifier {
         Ok(results)
     }
 
-    /// BERT-compatible tokenization with embeddings
-    fn tokenize_with_bert_compatible(&self, text: &str) -> Result<Vec<(String, Tensor)>> {
+    /// BERT-compatible tokenization with embeddings and character offsets
+    fn tokenize_with_bert_compatible(&self, text: &str) -> Result<Vec<(String, Tensor, usize, usize)>> {
         // Use real BERT tokenization through unified tokenizer
         let tokenization_result = self
             .tokenizer
@@ -251,8 +409,9 @@ impl LoRATokenClassifier {
             .with_model_context(ModelErrorType::Tokenizer, "tokenize_for_lora", Some(text))
             .map_err(|unified_err| candle_core::Error::from(unified_err))?;
 
-        // Clone tokens before creating tensors to avoid borrow checker issues
+        // Clone tokens and offsets before creating tensors to avoid borrow checker issues
         let token_strings = tokenization_result.tokens.clone();
+        let offsets = tokenization_result.offsets.clone();
         let (token_ids_tensor, attention_mask_tensor) = self
             .tokenizer
             .create_tensors(&tokenization_result)
@@ -273,15 +432,16 @@ impl LoRATokenClassifier {
         // Remove batch dimension since we're processing single text
         let token_embeddings = hidden_states.squeeze(0)?; // Shape: [seq_len, hidden_size]
 
-        // Create result vector with token strings and their embeddings
+        // Create result vector with token strings, embeddings, and character offsets
         let mut results = Vec::new();
         let seq_len = token_strings.len();
 
         for (i, token) in token_strings.iter().enumerate() {
-            if i < seq_len {
+            if i < seq_len && i < offsets.len() {
                 // Extract embedding for this token
                 let token_embedding = token_embeddings.i(i)?; // Shape: [hidden_size]
-                results.push((token.clone(), token_embedding));
+                let (start, end) = offsets[i];
+                results.push((token.clone(), token_embedding, start, end));
             }
         }
 
