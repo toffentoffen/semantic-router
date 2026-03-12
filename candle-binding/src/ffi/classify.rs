@@ -648,6 +648,7 @@ pub extern "C" fn classify_candle_bert_tokens(
     // Use intelligent routing to determine which classifier to use
     // First check if LoRA token classifier is available
     if let Some(lora_classifier) = crate::ffi::init::LORA_TOKEN_CLASSIFIER.get() {
+        println!("[DEBUG classify_candle_bert_tokens] Using LoRA token classifier");
         let lora_classifier = lora_classifier.clone();
         match lora_classifier.classify_tokens(text) {
             Ok(lora_results) => {
@@ -677,6 +678,7 @@ pub extern "C" fn classify_candle_bert_tokens(
 
     // Fallback to traditional BERT token classifier
     if let Some(classifier) = TRADITIONAL_BERT_TOKEN_CLASSIFIER.get() {
+        println!("[DEBUG classify_candle_bert_tokens] Using Traditional BERT token classifier");
         let classifier = classifier.clone();
         match classifier.classify_tokens(text) {
             Ok(token_results) => {
@@ -706,6 +708,7 @@ pub extern "C" fn classify_candle_bert_tokens(
     }
 
     // Fallback to ModernBERT token classifier (for PII detection with ModernBERT models)
+    println!("[DEBUG classify_candle_bert_tokens] Trying ModernBERT token classifier");
     if let Some(classifier) = TRADITIONAL_MODERNBERT_TOKEN_CLASSIFIER.get() {
         let classifier = classifier.clone();
         match classifier.classify_tokens(text) {
@@ -2272,9 +2275,11 @@ pub extern "C" fn classify_mmbert_32k_pii_tokens(
     };
 
     if let Some(classifier) = MMBERT_32K_PII_CLASSIFIER.get() {
+        println!("[DEBUG classify_mmbert_32k_pii_tokens] Using mmBERT-32K PII classifier");
         match classifier.classify_tokens(text) {
             Ok(entities) => {
                 let num_entities = entities.len() as i32;
+                println!("[DEBUG classify_mmbert_32k_pii_tokens] Found {} entities", num_entities);
                 if num_entities == 0 {
                     return default_result;
                 }
@@ -2296,6 +2301,11 @@ pub extern "C" fn classify_mmbert_32k_pii_tokens(
                     } else {
                         ""
                     };
+
+                    println!(
+                        "[DEBUG classify_mmbert_32k_pii_tokens] entity={:?} type={} conf={:.4} pos=[{}:{}]",
+                        entity_text, entity_type, confidence, start, end
+                    );
 
                     unsafe {
                         std::ptr::write(

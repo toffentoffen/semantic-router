@@ -551,7 +551,6 @@ func TestBertClassifier_ConcurrentClassificationSafety(t *testing.T) {
 // TestModernBERTPIITokenClassification tests the PII token classification functionality
 // Note: This test is skipped because the ModernBERT PII token classifier model is not available
 func TestModernBERTPIITokenClassification(t *testing.T) {
-  t.Skip("Skipping ModernBERT PII token classifier tests - model not available in current setup")
 
   // Test data with various PII entities
   testCases := []struct {
@@ -3877,12 +3876,8 @@ func TestMmBert32KFeedbackClassifier(t *testing.T) {
 
 // TestMmBert32KPIIClassifier tests PII detection with mmBERT-32K
 func TestMmBert32KPIIClassifier(t *testing.T) {
-  modelPath := getMmBert32KModelPath("pii-detector")
-  if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-    t.Skipf("mmBERT-32K PII detector not found at %s", modelPath)
-  }
 
-  err := InitMmBert32KPIIClassifier(modelPath, true)
+  err := InitMmBert32KPIIClassifier("../models/mmbert32k-pii-detector-merged", true)
   if err != nil {
     t.Skipf("Failed to initialize mmBERT-32K PII detector: %v", err)
   }
@@ -3895,6 +3890,7 @@ func TestMmBert32KPIIClassifier(t *testing.T) {
     {"My phone number is 555-123-4567", "phone number"},
     {"I live at 123 Main Street, New York", "address"},
     {"My SSN is 123-45-6789", "SSN"},
+    {"My credit card number is 1234-5678-9012-3456", "credit card"},
   }
 
   for _, tc := range testCases {

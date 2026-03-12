@@ -238,6 +238,16 @@ impl LoRATokenClassifier {
                     .cloned()
                     .unwrap_or_else(|| format!("LABEL_{}", predicted_id));
 
+                let token_text = if *start < text.len() && *end <= text.len() {
+                    &text[*start..*end]
+                } else {
+                    "<out-of-bounds>"
+                };
+                println!(
+                    "[DEBUG LoRA] token={:?} label={} (id={}) conf={:.4} offset=[{}:{}]",
+                    token_text, label_name, predicted_id, confidence, start, end
+                );
+
                 predictions.push(TokenPrediction {
                     label_name,
                     label_id: predicted_id,
@@ -247,6 +257,8 @@ impl LoRATokenClassifier {
                 });
             }
         }
+
+        println!("[DEBUG LoRA] is_bio_format={}, total predictions={}", is_bio_format, predictions.len());
 
         // Entity merging
         let mut results = Vec::new();
@@ -396,6 +408,12 @@ impl LoRATokenClassifier {
             results.len(),
             duration
         );
+        for r in &results {
+            println!(
+                "[DEBUG LoRA merged] entity={:?} label={} (id={}) conf={:.4} pos=[{}:{}]",
+                r.token, r.label_name, r.label_id, r.confidence, r.start_pos, r.end_pos
+            );
+        }
 
         Ok(results)
     }

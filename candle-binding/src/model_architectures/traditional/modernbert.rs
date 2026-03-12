@@ -1375,8 +1375,12 @@ impl TraditionalModernBertTokenClassifier {
                 .trim_end_matches("/pytorch_model.bin")
         );
         let id2label = match crate::ffi::classify::load_id2label_from_config(&config_path) {
-            Ok(mapping) => mapping,
+            Ok(mapping) => {
+                println!("[DEBUG modernbert classify_tokens] Loaded id2label from {}: {:?}", config_path, mapping);
+                mapping
+            }
             Err(_) => {
+                println!("[DEBUG modernbert classify_tokens] Failed to load id2label from {}, using fallback path", config_path);
                 // Fallback: return individual token results without any label processing
                 for (token_idx, token_probs) in probs_data.iter().enumerate() {
                     if token_idx < tokenization_result.tokens.len()
@@ -1410,8 +1414,11 @@ impl TraditionalModernBertTokenClassifier {
             .values()
             .any(|v| v.starts_with("B-") || v.starts_with("I-"));
 
+        println!("[DEBUG modernbert classify_tokens] is_bio_format={}", is_bio_format);
+
         // For simple token classification (non-BIO format), return individual token predictions
         if !is_bio_format {
+            println!("[DEBUG modernbert classify_tokens] Taking NON-BIO path (no merging)");
             for (token_idx, token_probs) in probs_data.iter().enumerate() {
                 if token_idx < tokenization_result.tokens.len()
                     && token_idx < tokenization_result.offsets.len()
@@ -1464,6 +1471,16 @@ impl TraditionalModernBertTokenClassifier {
                 .clone();
             let confidence = probs_data[i][pred_id as usize];
 
+            let token_text = if offset.0 < text.len() && offset.1 <= text.len() {
+                &text[offset.0..offset.1]
+            } else {
+                "<oob>"
+            };
+            println!(
+                "[DEBUG modernbert BIO] i={} token={:?} label={} (pred_id={}) conf={:.4} offset=[{}:{}]",
+                i, token_text, label, pred_id, confidence, offset.0, offset.1
+            );
+
             if label.starts_with("B-") {
                 // Beginning of new entity
                 if let Some(entity) = current_entity.take() {
@@ -1506,7 +1523,15 @@ impl TraditionalModernBertTokenClassifier {
             entities.push(entity);
         }
 
+        println!("[DEBUG modernbert BIO] Merged into {} entities", entities.len());
+
         // Convert entities to results format
+        for entity in &entities {
+            println!(
+                "[DEBUG modernbert BIO merged] type={} text={:?} conf={:.4} pos=[{}:{}]",
+                entity.entity_type, entity.text, entity.confidence, entity.start, entity.end
+            );
+        }
         for entity in entities {
             // Find the class index for this entity type
             let class_idx = id2label
